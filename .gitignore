@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Any yaml config files
+config.yaml
+
+#Unnecessary files
+*.DS_Store
