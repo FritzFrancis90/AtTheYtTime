@@ -1,0 +1,13 @@
+SpreadsheetURL:
+DJSpreadsheetURL:
+APIKey:
+AWS_Bucket_Name:
+AWS_Bucket_Location:
+IncludedFont: 
+previousRun: "2025-01-19T12:00:00+0000"
+SaveLocation:
+    MacOSLocation: 
+    LinuxLocation:
+    WindowsLocation: 
+defaultDaysToLookBack: 7
+maxThreads: 4
