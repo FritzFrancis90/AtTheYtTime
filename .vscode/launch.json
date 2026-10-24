@@ -5,6 +5,28 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "PodTube: Sync (Dry Run)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "podtube.cli",
+            "args": ["sync", "--dry-run"],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "PodTube: Sync",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "podtube.cli",
+            "args": ["sync"],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal"
+        },
+        {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
             "request": "launch",
