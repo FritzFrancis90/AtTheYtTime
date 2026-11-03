@@ -20,7 +20,6 @@ class AppConfig:
     included_font: Path
     save_location: str
     spreadsheet_url: str
-    dj_spreadsheet_url: Optional[str]
     api_key: Optional[str]
     last_run_timestamp: datetime
     aws_bucket_name: str

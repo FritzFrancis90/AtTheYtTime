@@ -2,11 +2,14 @@
 
 import csv
 import json
+import logging
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from urllib import error, request, parse
 from podtube.models import Channel, Video
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -19,6 +22,7 @@ DEFAULT_HEADERS = {
 
 
 def convert_csv_to_object(url: str) -> list[dict]:
+    logger.debug("Fetching channel list CSV from spreadsheet...")
     data = []
     with request.urlopen(url) as f:
         channelList = [line.decode("utf-8") for line in f.readlines()]
@@ -56,6 +60,7 @@ class VideoQuery:
             f"https://www.googleapis.com/{self.api_service_name}/{self.api_version}/{command}?{params}"
             f"&key={self.APIKey}"
         )
+        logger.debug("YouTube Data API v3 request: %s?%s", command, params)
         response = request.urlopen(query)
         return json.load(response)
 
@@ -73,12 +78,25 @@ class VideoQuery:
         raw_xml = None
         for attempt in range(1, max_retries + 1):
             try:
+                logger.debug(
+                    "Fetching RSS XML feed for %s (attempt %d/%d)",
+                    channel_id,
+                    attempt,
+                    max_retries,
+                )
                 with request.urlopen(req, timeout=15) as response:
                     raw_xml = response.read()
                 break
             except error.HTTPError as exc:
                 if attempt < max_retries:
-                    time.sleep(1.5 * attempt)
+                    delay = 1.5 * attempt
+                    logger.debug(
+                        "RSS feed returned %s for %s; retrying in %.1fs...",
+                        exc,
+                        channel_id,
+                        delay,
+                    )
+                    time.sleep(delay)
                 else:
                     raise exc
 
@@ -106,9 +124,10 @@ class VideoQuery:
         try:
             return self.YouTubeChannelXMLLookUp(channelIDString, LastRunTimeStamp)
         except Exception as exc:
-            print(
-                f"  [fallback] RSS feed failed for {channelIDString} ({exc}); "
-                "trying YouTube Data API once..."
+            logger.warning(
+                "RSS feed failed for %s (%s); falling back to YouTube Data API once...",
+                channelIDString,
+                exc,
             )
             return self.GetVideosFromChannelViaAPI(
                 channelIDString, LastRunTimeStamp, currenttPageToken=currenttPageToken

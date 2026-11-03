@@ -9,7 +9,7 @@
             "type": "debugpy",
             "request": "launch",
             "module": "podtube.cli",
-            "args": ["sync", "--dry-run"],
+            "args": ["sync", "--dry-run", "--verbose"],
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             },

@@ -1,12 +1,16 @@
 """Domain models (Channel, Video, etc.) for PodTube."""
 
+import logging
 import os
 from urllib import request
 import isodate
 import yt_dlp as youtube_dl
 from mutagen.easyid3 import EasyID3
 from mutagen.id3 import ID3, APIC
+from podtube.logging_config import YtDlpLogger
 from podtube.services.artwork import ImageEditor
+
+logger = logging.getLogger(__name__)
 
 
 class Channel:
@@ -23,6 +27,13 @@ class Channel:
 
     def FilterVideosByLength(self, video) -> bool:
         if video.duration > self.maxLength and self.maxLength > 0:
+            logger.debug(
+                "Skipping [%s] %s: duration (%ss) exceeds limit (%ss)",
+                video.ID,
+                video.Title,
+                video.duration,
+                self.maxLength,
+            )
             return False
         return True
 
@@ -32,6 +43,12 @@ class Channel:
         for phrase in self.includePhrases:
             if phrase in video.Title:
                 return True
+        logger.debug(
+            "Skipping [%s] %s: title does not match included keywords %s",
+            video.ID,
+            video.Title,
+            self.includePhrases,
+        )
         return False
 
     def FilterVideosByExcludedTitle(self, video) -> bool:
@@ -39,6 +56,12 @@ class Channel:
             return True
         for phrase in self.excludePhrases:
             if phrase in video.Title:
+                logger.debug(
+                    "Skipping [%s] %s: title matched excluded keyword '%s'",
+                    video.ID,
+                    video.Title,
+                    phrase,
+                )
                 return False
         return True
 
@@ -46,6 +69,11 @@ class Channel:
         self.videoList = list(filter(lambda x: self.FilterVideosByLength(x), self.videoList))
         self.videoList = list(filter(lambda x: self.FilterVideosByIncludedTitle(x), self.videoList))
         self.videoList = list(filter(lambda x: self.FilterVideosByExcludedTitle(x), self.videoList))
+        for v in self.videoList:
+            if v.alreadyLoaded != 0:
+                logger.debug("Skipping [%s] %s: already exists on S3", v.ID, v.Title)
+            elif v.isValidDownload != 1:
+                logger.debug("Skipping [%s] %s: marked invalid/live broadcast", v.ID, v.Title)
         self.videoList = list(filter(lambda x: x.alreadyLoaded == 0, self.videoList))
         self.videoList = list(filter(lambda x: x.isValidDownload == 1, self.videoList))
 
@@ -125,8 +153,10 @@ class Video:
                 self.formattedArtwork = item["snippet"]["thumbnails"]["high"]["url"]
 
     def DownloadVideoAsAudio(self, folderPath: str, channelID: str) -> bool:
-        if os.path.exists(folderPath + "/" + channelID + "/" + self.ID + ".mp3"):
-            self.fileLocation = folderPath + "/" + channelID + "/" + self.ID + ".mp3"
+        existing_path = folderPath + "/" + channelID + "/" + self.ID + ".mp3"
+        if os.path.exists(existing_path):
+            logger.debug("Audio already downloaded locally: %s/%s.mp3", channelID, self.ID)
+            self.fileLocation = existing_path
             return True
         ydl_opts = {
             "restrictfilenames": True,
@@ -136,6 +166,8 @@ class Video:
             "prefer_ffmpeg": True,
             "outtmpl": folderPath + self.ID + ".%(ext)s",
             "ffmpeg_location": "/usr/local/Cellar/ffmpeg/7.1.1_2/bin/ffmpeg",
+            "logger": YtDlpLogger(logger),
+            "noprogress": True,
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -146,10 +178,11 @@ class Video:
             ],
         }
         with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-            print(self.ID + " - " + self.Title)
+            logger.info("Downloading audio: [%s] %s", self.ID, self.Title)
             try:
                 ydl.download(["https://www.youtube.com/watch?v=" + self.ID])
-            except Exception:
+            except Exception as exc:
+                logger.error("Failed to download [%s] %s: %s", self.ID, self.Title, exc)
                 return False
             metatag = EasyID3(folderPath + self.ID + ".mp3")
             metatag["title"] = self.Title
