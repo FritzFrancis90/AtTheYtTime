@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import shutil
 import tempfile
 from typing import Optional, Union
 from urllib import error as urllib_error
@@ -31,6 +32,25 @@ class SyncStats:
     channel_errors: int = 0
 
 
+def parse_video_published_date(date_str: str) -> datetime:
+    """Parse an ISO-8601 video publish timestamp from either Atom XML or YouTube Data API v3."""
+    return datetime.fromisoformat(date_str)
+
+
+def cleanup_channel_local_files(channel: Channel, save_location: Union[str, Path]):
+    """Remove local audio, artwork, and XML files for a channel after S3 upload."""
+    base_dir = Path(save_location)
+    channel_dir = base_dir / channel.ID
+    if channel_dir.exists():
+        shutil.rmtree(channel_dir, ignore_errors=True)
+    for video in channel.videoList:
+        for suffix in (".jpg", "-altered.jpg", ".mp3"):
+            stray_file = base_dir / f"{video.ID}{suffix}"
+            if stray_file.exists():
+                stray_file.unlink()
+    logger.debug("Cleaned up local files for %s (%s)", channel.Name, channel.ID)
+
+
 def assign_already_loaded(channel: Channel, server: AWSStorage):
     for video in channel.videoList:
         if server.FileExists(f"{channel.ID}/{video.ID}.mp3") is True:
@@ -53,6 +73,7 @@ def run_sync(
     channel_filter: Optional[str] = None,
     dry_run: bool = False,
     update_timestamp: bool = True,
+    cleanup_local: bool = False,
 ) -> SyncStats:
     """Execute the channel sync and podcast feed generation workflow."""
     stats = SyncStats()
@@ -142,9 +163,7 @@ def run_sync(
                     )
                     NewFeed.AddEpisode(
                         AudioURL,
-                        datetime.strptime(
-                            video.datePublished, "%Y-%m-%dT%H:%M:%S%z"
-                        ),
+                        parse_video_published_date(video.datePublished),
                         video.Title,
                         DefaultVideoDescription + video.description,
                         video.fileLocation,
@@ -178,6 +197,8 @@ def run_sync(
                 upload_feed_to_aws(NewFeedFile, config.save_dir, server)
                 stats.feeds_updated += 1
                 logger.info("Updated podcast feed for %s (%s)", channel.Name, NewFeedFile)
+                if cleanup_local:
+                    cleanup_channel_local_files(channel, config.save_dir)
         except urllib_error.HTTPError as exc:
             stats.channel_errors += 1
             logger.error(
