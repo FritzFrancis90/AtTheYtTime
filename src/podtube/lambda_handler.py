@@ -1,0 +1,96 @@
+"""AWS Lambda entry point and S3-backed state persistence for PodTube."""
+
+from dataclasses import asdict
+from datetime import datetime, timezone
+import json
+import logging
+import os
+from pathlib import Path
+import tempfile
+from typing import Any, Optional
+from podtube.config import load_config
+from podtube.logging_config import setup_logging
+from podtube.pipeline import run_sync
+from podtube.services.storage import AWSStorage
+
+logger = logging.getLogger(__name__)
+
+STATE_OBJECT_KEY = "podtube-state.json"
+
+
+def load_cloud_previous_run(server: AWSStorage) -> Optional[datetime]:
+    """Load the last successful sync timestamp from S3 if present."""
+    if not server.FileExists(STATE_OBJECT_KEY):
+        return None
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        local_state = Path(tmp_dir) / STATE_OBJECT_KEY
+        server.DownloadFile(STATE_OBJECT_KEY, str(local_state))
+        if not local_state.exists():
+            return None
+        try:
+            payload = json.loads(local_state.read_text(encoding="utf-8"))
+            ts_str = payload.get("previousRun")
+            return datetime.fromisoformat(ts_str) if ts_str else None
+        except Exception as exc:
+            logger.warning("Could not parse %s from S3: %s", STATE_OBJECT_KEY, exc)
+            return None
+
+
+def save_cloud_previous_run(
+    server: AWSStorage, run_time: Optional[datetime] = None
+) -> str:
+    """Persist the latest sync timestamp to S3."""
+    ts = (run_time or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    formatted_ts = ts.strftime("%Y-%m-%dT%H:%M:%S%z")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        local_state = Path(tmp_dir) / STATE_OBJECT_KEY
+        local_state.write_text(
+            json.dumps({"previousRun": formatted_ts}), encoding="utf-8"
+        )
+        if server.FileExists(STATE_OBJECT_KEY):
+            server.DeleteFile(STATE_OBJECT_KEY)
+        server.UploadFile(str(local_state), designatedFileName=STATE_OBJECT_KEY)
+    logger.info("Updated %s in S3 to %s", STATE_OBJECT_KEY, formatted_ts)
+    return formatted_ts
+
+
+def handler(event: Optional[dict[str, Any]], context: Any) -> dict[str, Any]:
+    """AWS Lambda handler invoked by EventBridge Scheduler or manual test events."""
+    event = event or {}
+    os.environ.setdefault("PODTUBE_SAVE_LOCATION", "/tmp/podtube")
+
+    verbose = bool(event.get("verbose", False))
+    dry_run = bool(event.get("dry_run", False))
+    channel_filter = event.get("channel")
+    days_back = event.get("days_back")
+    cleanup_local = bool(event.get("cleanup_local", True))
+    update_timestamp = bool(event.get("update_timestamp", True))
+
+    setup_logging(verbose=verbose)
+    sync_start_time = datetime.now(timezone.utc)
+
+    cfg = load_config(days_back_override=days_back)
+    Path(cfg.save_dir).mkdir(parents=True, exist_ok=True)
+
+    server = AWSStorage(cfg.aws_bucket_name, cfg.aws_bucket_location)
+    if days_back is None:
+        cloud_prev = load_cloud_previous_run(server)
+        if cloud_prev is not None:
+            cfg.last_run_timestamp = max(cloud_prev, cfg.last_run_timestamp)
+
+    stats = run_sync(
+        cfg,
+        channel_filter=channel_filter,
+        dry_run=dry_run,
+        update_timestamp=False,
+        cleanup_local=cleanup_local,
+    )
+
+    if not dry_run and not channel_filter and update_timestamp:
+        save_cloud_previous_run(server, sync_start_time)
+
+    return {
+        "statusCode": 200,
+        "stats": asdict(stats),
+    }
+
