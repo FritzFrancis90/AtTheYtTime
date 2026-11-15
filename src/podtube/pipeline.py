@@ -1,13 +1,13 @@
 """Core pipeline orchestration for syncing channels and updating feeds."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
 import tempfile
 from typing import Optional, Union
 from urllib import error as urllib_error
-from podtube.config import AppConfig
+from podtube.config import AppConfig, update_previous_run
 from podtube.models import Channel
 from podtube.services.artwork import create_podcast_image
 from podtube.services.feed import PodcastFeed, add_old_episodes_to_new_feed
@@ -52,9 +52,11 @@ def run_sync(
     config: AppConfig,
     channel_filter: Optional[str] = None,
     dry_run: bool = False,
+    update_timestamp: bool = True,
 ) -> SyncStats:
     """Execute the channel sync and podcast feed generation workflow."""
     stats = SyncStats()
+    sync_start_time = datetime.now(timezone.utc)
     downloader = VideoQuery(api_key=config.api_key or "APIKey")
     server = AWSStorage(config.aws_bucket_name, config.aws_bucket_location)
 
@@ -186,5 +188,9 @@ def run_sync(
             )
         except VideoDownloadException:
             stats.channel_errors += 1
+
+    if not dry_run and not channel_filter and update_timestamp:
+        new_ts = update_previous_run(config.config_file, sync_start_time)
+        logger.info("Updated previousRun in %s to %s", config.config_file.name, new_ts)
 
     return stats
