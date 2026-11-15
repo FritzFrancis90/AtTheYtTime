@@ -1,6 +1,7 @@
 """Configuration loading and validation for PodTube."""
 
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -98,3 +99,21 @@ def load_config(
         ffmpeg_location=resolve_ffmpeg_location(raw),
         max_threads=int(raw.get("maxThreads", 4)),
     )
+
+
+def update_previous_run(config_path: Path, run_time: Optional[datetime] = None) -> str:
+    """Update the previousRun timestamp in config.yaml while preserving comments and formatting."""
+    ts = (run_time or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    formatted_ts = ts.strftime("%Y-%m-%dT%H:%M:%S%z")
+    content = config_path.read_text(encoding="utf-8")
+    updated, count = re.subn(
+        r'^(previousRun:\s*).*$',
+        rf'\1"{formatted_ts}"',
+        content,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if count == 0:
+        updated = content.rstrip() + f'\npreviousRun: "{formatted_ts}"\n'
+    config_path.write_text(updated, encoding="utf-8")
+    return formatted_ts

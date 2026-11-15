@@ -110,6 +110,11 @@ if HAS_TYPER:
             "--dry-run",
             help="Check for new videos without downloading or uploading.",
         ),
+        no_update_timestamp: bool = typer.Option(
+            False,
+            "--no-update-timestamp",
+            help="Do not update previousRun in config.yaml after a full sync.",
+        ),
         verbose: bool = typer.Option(
             False,
             "--verbose",
@@ -130,7 +135,12 @@ if HAS_TYPER:
         """Sync active YouTube channels and publish updated podcast feeds."""
         setup_logging(verbose=verbose, log_file=log_file)
         cfg = load_config(config_path=config_path, days_back_override=days_back)
-        stats = run_sync(cfg, channel_filter=channel, dry_run=dry_run)
+        stats = run_sync(
+            cfg,
+            channel_filter=channel,
+            dry_run=dry_run,
+            update_timestamp=not no_update_timestamp,
+        )
         _print_sync_summary(stats, dry_run=dry_run)
 
     @_typer_app.command("channels")
@@ -180,6 +190,11 @@ def _run_argparse():
         help="Check for new videos without downloading or uploading.",
     )
     sync_parser.add_argument(
+        "--no-update-timestamp",
+        action="store_true",
+        help="Do not update previousRun in config.yaml after a full sync.",
+    )
+    sync_parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -205,7 +220,12 @@ def _run_argparse():
     if args.command == "sync":
         setup_logging(verbose=args.verbose, log_file=args.log_file)
         cfg = load_config(config_path=args.config, days_back_override=args.days_back)
-        stats = run_sync(cfg, channel_filter=args.channel, dry_run=args.dry_run)
+        stats = run_sync(
+            cfg,
+            channel_filter=args.channel,
+            dry_run=args.dry_run,
+            update_timestamp=not args.no_update_timestamp,
+        )
         _print_sync_summary(stats, dry_run=args.dry_run)
     elif args.command == "channels":
         setup_logging(verbose=args.verbose)
