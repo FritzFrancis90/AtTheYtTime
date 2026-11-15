@@ -1,7 +1,7 @@
 FROM public.ecr.aws/lambda/python:3.12
 
 # Install static ffmpeg binary from official yt-dlp/FFmpeg-Builds GitHub releases
-RUN dnf install -y tar xz curl && \
+RUN dnf install -y tar xz && \
     curl -fL https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | \
     tar -xJ --strip-components=2 -C /usr/local/bin/ --wildcards '*/bin/ffmpeg' '*/bin/ffprobe' && \
     chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe && \

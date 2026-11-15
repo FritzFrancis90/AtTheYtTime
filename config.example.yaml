@@ -2,7 +2,7 @@ SpreadsheetURL:
 APIKey:
 AWS_Bucket_Name:
 AWS_Bucket_Location:
-IncludedFont: 
+IncludedFont: fonts/Oswald/static/Oswald-Regular.ttf
 previousRun: "2025-01-19T12:00:00+0000"
 SaveLocation:
     MacOSLocation: 

@@ -68,6 +68,45 @@ class TestConfig(unittest.TestCase):
             self.assertIn("# Top comment preserved", updated_text)
             self.assertIn("# Bottom comment preserved", updated_text)
 
+    def test_lambda_task_root_and_example_config_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            task_root = Path(tmp_dir)
+            # Simulate config.example.yaml where fields like IncludedFont are blank
+            minimal_yaml = (
+                "SpreadsheetURL:\n"
+                "APIKey:\n"
+                "AWS_Bucket_Name:\n"
+                "AWS_Bucket_Location:\n"
+                "IncludedFont:\n"
+                'previousRun: "2025-01-19T12:00:00+0000"\n'
+                "SaveLocation:\n"
+                "    MacOSLocation:\n"
+                "    LinuxLocation:\n"
+                "    WindowsLocation:\n"
+                "defaultDaysToLookBack: 7\n"
+                "maxThreads: 4\n"
+            )
+            (task_root / "config.yaml").write_text(minimal_yaml, encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {
+                    "LAMBDA_TASK_ROOT": str(task_root),
+                    "PODTUBE_SPREADSHEET_URL": "https://example.com/sheet.csv",
+                    "PODTUBE_API_KEY": "lambda-key",
+                    "PODTUBE_AWS_BUCKET_NAME": "lambda-bucket",
+                    "PODTUBE_AWS_BUCKET_LOCATION": "https://s3-{0}.amazonaws.com/{1}/{2}",
+                },
+            ):
+                cfg = load_config()
+                self.assertEqual(cfg.project_root, task_root)
+                self.assertEqual(cfg.config_file, task_root / "config.yaml")
+                self.assertEqual(
+                    cfg.included_font,
+                    task_root / "fonts/Oswald/static/Oswald-Regular.ttf",
+                )
+                self.assertEqual(cfg.aws_bucket_name, "lambda-bucket")
+
 
 if __name__ == "__main__":
     unittest.main()
