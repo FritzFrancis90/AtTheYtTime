@@ -39,7 +39,7 @@ class PodcastFeed:
             summary=Description,
         )
         if localFileLocation is not None:
-            ep.media.duration = ep.media.populate_duration_from(localFileLocation)
+            ep.media.populate_duration_from(localFileLocation)
         self.p.add_episode(ep)
 
     def SetFeedImage(self, URL: str):

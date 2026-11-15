@@ -115,6 +115,11 @@ if HAS_TYPER:
             "--no-update-timestamp",
             help="Do not update previousRun in config.yaml after a full sync.",
         ),
+        cleanup_local: bool = typer.Option(
+            False,
+            "--cleanup-local",
+            help="Remove local audio, artwork, and XML files after uploading to S3.",
+        ),
         verbose: bool = typer.Option(
             False,
             "--verbose",
@@ -140,6 +145,7 @@ if HAS_TYPER:
             channel_filter=channel,
             dry_run=dry_run,
             update_timestamp=not no_update_timestamp,
+            cleanup_local=cleanup_local,
         )
         _print_sync_summary(stats, dry_run=dry_run)
 
@@ -195,6 +201,11 @@ def _run_argparse():
         help="Do not update previousRun in config.yaml after a full sync.",
     )
     sync_parser.add_argument(
+        "--cleanup-local",
+        action="store_true",
+        help="Remove local audio, artwork, and XML files after uploading to S3.",
+    )
+    sync_parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -225,6 +236,7 @@ def _run_argparse():
             channel_filter=args.channel,
             dry_run=args.dry_run,
             update_timestamp=not args.no_update_timestamp,
+            cleanup_local=args.cleanup_local,
         )
         _print_sync_summary(stats, dry_run=args.dry_run)
     elif args.command == "channels":

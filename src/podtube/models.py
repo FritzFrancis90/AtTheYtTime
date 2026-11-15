@@ -1,12 +1,14 @@
 """Domain models (Channel, Video, etc.) for PodTube."""
 
 import logging
-import os
+from pathlib import Path
+from typing import Optional, Union
 from urllib import request
 import isodate
 import yt_dlp as youtube_dl
 from mutagen.easyid3 import EasyID3
 from mutagen.id3 import ID3, APIC
+from podtube.config import resolve_ffmpeg_location
 from podtube.logging_config import YtDlpLogger
 from podtube.services.artwork import ImageEditor
 
@@ -77,22 +79,20 @@ class Channel:
         self.videoList = list(filter(lambda x: x.alreadyLoaded == 0, self.videoList))
         self.videoList = list(filter(lambda x: x.isValidDownload == 1, self.videoList))
 
-    def MoveVideosToFolder(self, SaveLocation: str):
-        channelFolder = SaveLocation + self.ID
-        if not os.path.exists(channelFolder):
-            os.makedirs(channelFolder)
+    def MoveVideosToFolder(self, SaveLocation: Union[str, Path]):
+        base_dir = Path(SaveLocation)
+        channel_folder = base_dir / self.ID
+        channel_folder.mkdir(parents=True, exist_ok=True)
         for video in self.videoList:
-            if os.path.exists(SaveLocation + video.ID + ".mp3"):
-                os.rename(
-                    SaveLocation + video.ID + ".mp3",
-                    channelFolder + "/" + video.ID + ".mp3",
-                )
-                video.fileLocation = channelFolder + "/" + video.ID + ".mp3"
-            if os.path.exists(SaveLocation + video.ID + "-altered.jpg"):
-                os.rename(
-                    SaveLocation + video.ID + "-altered.jpg",
-                    channelFolder + "/" + video.ID + "-altered.jpg",
-                )
+            src_mp3 = base_dir / f"{video.ID}.mp3"
+            dst_mp3 = channel_folder / f"{video.ID}.mp3"
+            if src_mp3.exists():
+                src_mp3.rename(dst_mp3)
+                video.fileLocation = str(dst_mp3)
+            src_art = base_dir / f"{video.ID}-altered.jpg"
+            dst_art = channel_folder / f"{video.ID}-altered.jpg"
+            if src_art.exists():
+                src_art.rename(dst_art)
 
     def getDatePublished(self, video):
         return video.datePublished
@@ -101,9 +101,9 @@ class Channel:
         validVideoList = list(filter(lambda x: x.isValidDownload == 1, self.videoList))
         return sorted(validVideoList, key=lambda v: self.getDatePublished(v), reverse=True)[0]
 
-    def GetListOfAllVideos(self, SaveLocation: str):
-        channelFolder = SaveLocation + "/" + self.ID
-        return list(filter(lambda x: x.endswith(".mp3"), os.listdir(channelFolder)))
+    def GetListOfAllVideos(self, SaveLocation: Union[str, Path]):
+        channel_folder = Path(SaveLocation) / self.ID
+        return [p.name for p in channel_folder.iterdir() if p.suffix == ".mp3"]
 
 
 class Video:
@@ -152,20 +152,27 @@ class Video:
                 self.thumbnailURL = item["snippet"]["thumbnails"]["high"]["url"]
                 self.formattedArtwork = item["snippet"]["thumbnails"]["high"]["url"]
 
-    def DownloadVideoAsAudio(self, folderPath: str, channelID: str) -> bool:
-        existing_path = folderPath + "/" + channelID + "/" + self.ID + ".mp3"
-        if os.path.exists(existing_path):
+    def DownloadVideoAsAudio(
+        self,
+        folderPath: Union[str, Path],
+        channelID: str,
+        ffmpeg_location: Optional[str] = None,
+    ) -> bool:
+        base_dir = Path(folderPath)
+        existing_path = base_dir / channelID / f"{self.ID}.mp3"
+        if existing_path.exists():
             logger.debug("Audio already downloaded locally: %s/%s.mp3", channelID, self.ID)
-            self.fileLocation = existing_path
+            self.fileLocation = str(existing_path)
             return True
+
+        resolved_ffmpeg = ffmpeg_location or resolve_ffmpeg_location()
         ydl_opts = {
             "restrictfilenames": True,
             "simulate": False,
             "format": "bestaudio/best",
             "geo_bypass": True,
             "prefer_ffmpeg": True,
-            "outtmpl": folderPath + self.ID + ".%(ext)s",
-            "ffmpeg_location": "/usr/local/Cellar/ffmpeg/7.1.1_2/bin/ffmpeg",
+            "outtmpl": str(base_dir / f"{self.ID}.%(ext)s"),
             "logger": YtDlpLogger(logger),
             "noprogress": True,
             "postprocessors": [
@@ -177,6 +184,12 @@ class Video:
                 {"key": "FFmpegMetadata"},
             ],
         }
+        if resolved_ffmpeg:
+            ydl_opts["ffmpeg_location"] = resolved_ffmpeg
+
+        mp3_path = base_dir / f"{self.ID}.mp3"
+        jpg_path = base_dir / f"{self.ID}.jpg"
+
         with youtube_dl.YoutubeDL(ydl_opts) as ydl:
             logger.info("Downloading audio: [%s] %s", self.ID, self.Title)
             try:
@@ -184,7 +197,7 @@ class Video:
             except Exception as exc:
                 logger.error("Failed to download [%s] %s: %s", self.ID, self.Title, exc)
                 return False
-            metatag = EasyID3(folderPath + self.ID + ".mp3")
+            metatag = EasyID3(str(mp3_path))
             metatag["title"] = self.Title
             metatag["artist"] = self.Creator
             metatag["album"] = "The YouTube Playlist"
@@ -192,10 +205,10 @@ class Video:
             metatag["comment"] = ""
             metatag["composer"] = self.Creator
             metatag.save()
-            self.fileLocation = folderPath + self.ID + ".mp3"
+            self.fileLocation = str(mp3_path)
 
-            request.urlretrieve(self.formattedArtwork, folderPath + self.ID + ".jpg")
-            artwork = ImageEditor(folderPath + self.ID + ".jpg")
+            request.urlretrieve(self.formattedArtwork, str(jpg_path))
+            artwork = ImageEditor(str(jpg_path))
             artwork = artwork.CropToCenter()
             artwork.ScaleImage(2)
             self.formattedArtwork = artwork.SaveImage()
