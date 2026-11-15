@@ -3,8 +3,9 @@
 from dataclasses import dataclass
 from datetime import datetime
 import logging
-import os
-from typing import Optional
+from pathlib import Path
+import tempfile
+from typing import Optional, Union
 from urllib import error as urllib_error
 from podtube.config import AppConfig
 from podtube.models import Channel
@@ -32,14 +33,19 @@ class SyncStats:
 
 def assign_already_loaded(channel: Channel, server: AWSStorage):
     for video in channel.videoList:
-        if server.FileExists(channel.ID + "/" + video.ID + ".mp3") is True:
+        if server.FileExists(f"{channel.ID}/{video.ID}.mp3") is True:
             video.alreadyLoaded = 1
 
 
-def upload_feed_to_aws(podcast_feed_file: str, save_location: str, server: AWSStorage):
+def upload_feed_to_aws(
+    podcast_feed_file: str,
+    save_location: Union[str, Path],
+    server: AWSStorage,
+):
     if server.FileExists(podcast_feed_file):
         server.DeleteFile(podcast_feed_file)
-    server.UploadFile(save_location + podcast_feed_file, podcast_feed_file)
+    local_feed_path = Path(save_location) / podcast_feed_file
+    server.UploadFile(str(local_feed_path), podcast_feed_file)
 
 
 def run_sync(
@@ -107,11 +113,13 @@ def run_sync(
                     )
                 continue
 
-            XMLFileName = channel.ID + "/" + channel.ID + ".xml"
-            NewFeed = PodcastFeed(channel.Name, save_location=config.save_location)
+            XMLFileName = f"{channel.ID}/{channel.ID}.xml"
+            NewFeed = PodcastFeed(channel.Name, save_location=config.save_dir)
             for newVideo in channel.videoList:
                 newVideoResult = newVideo.DownloadVideoAsAudio(
-                    config.save_location, channel.ID
+                    config.save_dir,
+                    channel.ID,
+                    ffmpeg_location=config.ffmpeg_location,
                 )
                 if newVideoResult is False:
                     newVideo.isValidDownload = 0
@@ -119,15 +127,16 @@ def run_sync(
                 else:
                     stats.episodes_downloaded += 1
 
-            channel.MoveVideosToFolder(config.save_location)
+            channel.MoveVideosToFolder(config.save_dir)
             for video in channel.videoList:
                 if video.isValidDownload == 1:
                     DefaultVideoDescription = (
-                        "Video: https://www.youtube.com/watch?v=" + video.ID + " \n\n"
+                        f"Video: https://www.youtube.com/watch?v={video.ID} \n\n"
                     )
+                    designated_mp3_key = f"{channel.ID}/{video.ID}.mp3"
                     AudioURL = server.GetProposedNewFileLocation(
                         video.fileLocation,
-                        designatedFileName=channel.ID + "/" + video.ID + ".mp3",
+                        designatedFileName=designated_mp3_key,
                     )
                     NewFeed.AddEpisode(
                         AudioURL,
@@ -140,7 +149,7 @@ def run_sync(
                     )
                     AudioURL = server.UploadFile(
                         video.fileLocation,
-                        designatedFileName=channel.ID + "/" + video.ID + ".mp3",
+                        designatedFileName=designated_mp3_key,
                     )
 
             if len([x for x in channel.videoList if x.isValidDownload == 1]) > 0:
@@ -148,11 +157,8 @@ def run_sync(
                 podcastImage = create_podcast_image(
                     MostRecentVideo, font_path=config.included_font
                 )
-                now = str(datetime.now())
-                now = "".join(ch for ch in now if ch.isdigit())
-                designatedFilepath = (
-                    channel.ID + "/" + channel.ID + "-" + now + ".jpg"
-                )
+                now = "".join(ch for ch in str(datetime.now()) if ch.isdigit())
+                designatedFilepath = f"{channel.ID}/{channel.ID}-{now}.jpg"
                 if server.FileExists(designatedFilepath):
                     server.DeleteFile(designatedFilepath)
                 ImageURL = server.UploadFile(
@@ -160,14 +166,14 @@ def run_sync(
                 )
                 NewFeed.SetFeedImage(ImageURL)
                 if server.FileExists(XMLFileName) is True:
-                    OldFeedXML = "OLD-" + channel.ID + ".xml"
-                    server.DownloadFile(XMLFileName, OldFeedXML)
-                    add_old_episodes_to_new_feed(OldFeedXML, NewFeed)
-                    os.remove(OldFeedXML)
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        old_feed_xml = Path(tmp_dir) / f"OLD-{channel.ID}.xml"
+                        server.DownloadFile(XMLFileName, str(old_feed_xml))
+                        add_old_episodes_to_new_feed(old_feed_xml, NewFeed)
                 NewFeedFile = NewFeed.ExportFeed(
-                    channel.ID, save_location=config.save_location
+                    channel.ID, save_location=config.save_dir
                 )
-                upload_feed_to_aws(NewFeedFile, config.save_location, server)
+                upload_feed_to_aws(NewFeedFile, config.save_dir, server)
                 stats.feeds_updated += 1
                 logger.info("Updated podcast feed for %s (%s)", channel.Name, NewFeedFile)
         except urllib_error.HTTPError as exc:
@@ -182,6 +188,3 @@ def run_sync(
             stats.channel_errors += 1
 
     return stats
-
-    return stats
-
