@@ -41,6 +41,8 @@ class AppConfig:
     aws_bucket_location: str
     ffmpeg_location: Optional[str] = None
     max_threads: int = 4
+    dynamodb_table_name: Optional[str] = None
+    aws_region: Optional[str] = None
 
 
 def _configure_location(raw_config: dict) -> str:
@@ -111,6 +113,12 @@ def load_config(
         aws_bucket_location=os.environ.get("PODTUBE_AWS_BUCKET_LOCATION") or raw.get("AWS_Bucket_Location") or "",
         ffmpeg_location=resolve_ffmpeg_location(raw),
         max_threads=int(raw.get("maxThreads") or 4),
+        dynamodb_table_name=os.environ.get("PODTUBE_DYNAMODB_TABLE") or raw.get("DynamoDB_Table_Name"),
+        aws_region=(
+            os.environ.get("PODTUBE_AWS_REGION")
+            or os.environ.get("AWS_REGION")
+            or raw.get("AWS_Region")
+        ),
     )
 
 

@@ -7,6 +7,10 @@ from typing import Optional
 from podtube.config import load_config
 from podtube.logging_config import setup_logging
 from podtube.pipeline import SyncStats, run_sync
+from podtube.services.channel_store import (
+    DynamoDBChannelStore,
+    import_sheet_to_dynamodb,
+)
 from podtube.services.youtube import get_channels
 
 logger = logging.getLogger(__name__)
@@ -49,9 +53,18 @@ def _print_sync_summary(stats: SyncStats, dry_run: bool = False):
         )
 
 
-def _print_channels(all_channels: bool = False, config_path: Optional[Path] = None):
+def _print_channels(
+    all_channels: bool = False,
+    config_path: Optional[Path] = None,
+    table_name: Optional[str] = None,
+):
     cfg = load_config(config_path=config_path)
-    channels = get_channels(cfg.spreadsheet_url)
+    active_table = table_name or cfg.dynamodb_table_name
+    if active_table:
+        store = DynamoDBChannelStore(active_table, region_name=cfg.aws_region)
+        channels = store.get_channels()
+    else:
+        channels = get_channels(cfg.spreadsheet_url)
     if not all_channels:
         channels = [ch for ch in channels if ch.isActive == 1]
 
@@ -157,6 +170,12 @@ if HAS_TYPER:
             "-a",
             help="Include inactive channels in the output.",
         ),
+        table: Optional[str] = typer.Option(
+            None,
+            "--table",
+            "-t",
+            help="DynamoDB table name override.",
+        ),
         verbose: bool = typer.Option(
             False,
             "--verbose",
@@ -169,9 +188,42 @@ if HAS_TYPER:
             help="Path to a custom config.yaml file.",
         ),
     ):
-        """List configured YouTube channels from the spreadsheet."""
+        """List configured YouTube channels (from DynamoDB if configured, otherwise Google Sheet)."""
         setup_logging(verbose=verbose)
-        _print_channels(all_channels=all_channels, config_path=config_path)
+        _print_channels(
+            all_channels=all_channels, config_path=config_path, table_name=table
+        )
+
+    @_typer_app.command("import-sheet")
+    def import_sheet(
+        table: Optional[str] = typer.Option(
+            None,
+            "--table",
+            "-t",
+            help="Target DynamoDB table name (defaults to DynamoDB_Table_Name in config.yaml or 'podtube-channels').",
+        ),
+        verbose: bool = typer.Option(
+            False,
+            "--verbose",
+            "-v",
+            help="Show detailed debug logs.",
+        ),
+        config_path: Optional[Path] = typer.Option(
+            None,
+            "--config",
+            help="Path to a custom config.yaml file.",
+        ),
+    ):
+        """Import all channels from the Google Sheet CSV into Amazon DynamoDB."""
+        setup_logging(verbose=verbose)
+        cfg = load_config(config_path=config_path)
+        target_table = table or cfg.dynamodb_table_name or "podtube-channels"
+        count = import_sheet_to_dynamodb(
+            spreadsheet_url=cfg.spreadsheet_url,
+            table_name=target_table,
+            region_name=cfg.aws_region,
+        )
+        logger.info("Successfully imported %d channel(s) into '%s'.", count, target_table)
 
 
 def _run_argparse():
@@ -217,15 +269,33 @@ def _run_argparse():
     sync_parser.add_argument("--config", type=Path, help="Path to a custom config.yaml file.")
 
     channels_parser = subparsers.add_parser(
-        "channels", help="List configured YouTube channels from the spreadsheet."
+        "channels",
+        help="List configured YouTube channels (from DynamoDB if configured, otherwise Google Sheet).",
     )
     channels_parser.add_argument(
         "-a", "--all", action="store_true", help="Include inactive channels in the output."
     )
     channels_parser.add_argument(
+        "-t", "--table", help="DynamoDB table name override."
+    )
+    channels_parser.add_argument(
         "-v", "--verbose", action="store_true", help="Show detailed debug logs."
     )
     channels_parser.add_argument("--config", type=Path, help="Path to a custom config.yaml file.")
+
+    import_parser = subparsers.add_parser(
+        "import-sheet",
+        help="Import all channels from the Google Sheet CSV into Amazon DynamoDB.",
+    )
+    import_parser.add_argument(
+        "-t",
+        "--table",
+        help="Target DynamoDB table name (defaults to DynamoDB_Table_Name in config.yaml or 'podtube-channels').",
+    )
+    import_parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Show detailed debug logs."
+    )
+    import_parser.add_argument("--config", type=Path, help="Path to a custom config.yaml file.")
 
     args = parser.parse_args()
     if args.command == "sync":
@@ -241,7 +311,19 @@ def _run_argparse():
         _print_sync_summary(stats, dry_run=args.dry_run)
     elif args.command == "channels":
         setup_logging(verbose=args.verbose)
-        _print_channels(all_channels=args.all, config_path=args.config)
+        _print_channels(
+            all_channels=args.all, config_path=args.config, table_name=args.table
+        )
+    elif args.command == "import-sheet":
+        setup_logging(verbose=args.verbose)
+        cfg = load_config(config_path=args.config)
+        target_table = args.table or cfg.dynamodb_table_name or "podtube-channels"
+        count = import_sheet_to_dynamodb(
+            spreadsheet_url=cfg.spreadsheet_url,
+            table_name=target_table,
+            region_name=cfg.aws_region,
+        )
+        logger.info("Successfully imported %d channel(s) into '%s'.", count, target_table)
 
 
 def app():

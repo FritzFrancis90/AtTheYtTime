@@ -11,6 +11,7 @@ from urllib import error as urllib_error
 from podtube.config import AppConfig, update_previous_run
 from podtube.models import Channel
 from podtube.services.artwork import create_podcast_image
+from podtube.services.channel_store import DynamoDBChannelStore
 from podtube.services.feed import PodcastFeed, add_old_episodes_to_new_feed
 from podtube.services.storage import AWSStorage
 from podtube.services.youtube import VideoQuery, get_channels
@@ -81,7 +82,13 @@ def run_sync(
     downloader = VideoQuery(api_key=config.api_key or "APIKey")
     server = AWSStorage(config.aws_bucket_name, config.aws_bucket_location)
 
-    all_channels = get_channels(config.spreadsheet_url)
+    if config.dynamodb_table_name:
+        store = DynamoDBChannelStore(
+            config.dynamodb_table_name, region_name=config.aws_region
+        )
+        all_channels = store.get_channels()
+    else:
+        all_channels = get_channels(config.spreadsheet_url)
     channel_list = [ch for ch in all_channels if ch.isActive == 1]
 
     if channel_filter:
