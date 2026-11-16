@@ -17,15 +17,49 @@ logger = logging.getLogger(__name__)
 
 class Channel:
     def __init__(self, data: dict):
-        self.ID = data["Youtube Channel ID"].strip()
-        self.Name = data["Youtube Channel Name"].strip()
-        self.excludePhrases = data["Key Words To Exclude"].split(",")
-        self.includePhrases = data["Key Words To Include"].split(",")
-        self.maxLength = 0
-        if int(data["Minute Limit Per Video"].strip() or 0) > 0:
-            self.maxLength = int(data["Minute Limit Per Video"]) * 60
-        self.isActive = 0 if data["Active"] == "N" else 1
+        if "channel_id" in data:
+            self.ID = str(data["channel_id"]).strip()
+            self.Name = str(data.get("channel_name", "")).strip()
+            raw_exclude = data.get("exclude_keywords", "")
+            raw_include = data.get("include_keywords", "")
+            self.excludePhrases = (
+                [str(x) for x in raw_exclude]
+                if isinstance(raw_exclude, list)
+                else str(raw_exclude or "").split(",")
+            )
+            self.includePhrases = (
+                [str(x) for x in raw_include]
+                if isinstance(raw_include, list)
+                else str(raw_include or "").split(",")
+            )
+            raw_limit = int(data.get("minute_limit") or 0)
+            self.maxLength = raw_limit * 60 if raw_limit > 0 else 0
+            raw_active = data.get("active", True)
+            if isinstance(raw_active, str):
+                self.isActive = 0 if raw_active.strip().upper() in ("N", "FALSE", "0") else 1
+            else:
+                self.isActive = 1 if bool(raw_active) else 0
+        else:
+            self.ID = data["Youtube Channel ID"].strip()
+            self.Name = data["Youtube Channel Name"].strip()
+            self.excludePhrases = data["Key Words To Exclude"].split(",")
+            self.includePhrases = data["Key Words To Include"].split(",")
+            self.maxLength = 0
+            if int(data["Minute Limit Per Video"].strip() or 0) > 0:
+                self.maxLength = int(data["Minute Limit Per Video"]) * 60
+            self.isActive = 0 if data["Active"] == "N" else 1
         self.videoList = []
+
+    def to_dynamodb_item(self) -> dict:
+        """Convert this Channel into a DynamoDB item dictionary."""
+        return {
+            "channel_id": self.ID,
+            "channel_name": self.Name,
+            "active": bool(self.isActive == 1),
+            "minute_limit": int(self.maxLength // 60) if self.maxLength > 0 else 0,
+            "include_keywords": ",".join(p for p in self.includePhrases if p),
+            "exclude_keywords": ",".join(p for p in self.excludePhrases if p),
+        }
 
     def FilterVideosByLength(self, video) -> bool:
         if video.duration > self.maxLength and self.maxLength > 0:

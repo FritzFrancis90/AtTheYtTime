@@ -13,6 +13,17 @@ import yaml
 
 # Default project root (two levels up from src/podtube/config.py)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DEFAULT_FONT_REL_PATH = "fonts/Oswald/static/Oswald-Regular.ttf"
+
+
+def resolve_project_root() -> Path:
+    """Resolve the active project root (supporting AWS Lambda's LAMBDA_TASK_ROOT and editable installs)."""
+    lambda_root = os.environ.get("LAMBDA_TASK_ROOT")
+    if lambda_root and (Path(lambda_root) / "config.yaml").exists():
+        return Path(lambda_root)
+    if (PROJECT_ROOT / "config.yaml").exists():
+        return PROJECT_ROOT
+    return Path.cwd()
 
 
 @dataclass
@@ -30,6 +41,8 @@ class AppConfig:
     aws_bucket_location: str
     ffmpeg_location: Optional[str] = None
     max_threads: int = 4
+    dynamodb_table_name: Optional[str] = None
+    aws_region: Optional[str] = None
 
 
 def _configure_location(raw_config: dict) -> str:
@@ -67,37 +80,45 @@ def load_config(
     days_back_override: Optional[int] = None,
 ) -> AppConfig:
     """Load PodTube configuration from config.yaml with optional environment variable overrides."""
-    resolved_path = Path(config_path) if config_path else (PROJECT_ROOT / "config.yaml")
+    project_root = resolve_project_root()
+    resolved_path = Path(config_path) if config_path else (project_root / "config.yaml")
     with open(resolved_path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+        raw = yaml.safe_load(f) or {}
 
     days_back = (
         days_back_override
         if days_back_override is not None
-        else int(raw["defaultDaysToLookBack"])
+        else int(raw.get("defaultDaysToLookBack") or 7)
     )
     previous_run_dt = datetime.strptime(raw["previousRun"], "%Y-%m-%dT%H:%M:%S%z")
     lookback_dt = datetime.now(timezone.utc) - timedelta(days=days_back)
     last_run_timestamp = max(previous_run_dt, lookback_dt)
 
-    included_font = PROJECT_ROOT / raw["IncludedFont"]
+    font_rel = raw.get("IncludedFont") or DEFAULT_FONT_REL_PATH
+    included_font = project_root / font_rel
     save_location = _configure_location(raw)
-    save_dir = Path(save_location) if save_location else PROJECT_ROOT
+    save_dir = Path(save_location) if save_location else project_root
 
     return AppConfig(
-        project_root=PROJECT_ROOT,
+        project_root=project_root,
         config_file=resolved_path,
         days_back=days_back,
         included_font=included_font,
         save_location=save_location,
         save_dir=save_dir,
-        spreadsheet_url=os.environ.get("PODTUBE_SPREADSHEET_URL") or raw["SpreadsheetURL"],
+        spreadsheet_url=os.environ.get("PODTUBE_SPREADSHEET_URL") or raw.get("SpreadsheetURL") or "",
         api_key=os.environ.get("PODTUBE_API_KEY") or raw.get("APIKey"),
         last_run_timestamp=last_run_timestamp,
-        aws_bucket_name=os.environ.get("PODTUBE_AWS_BUCKET_NAME") or raw["AWS_Bucket_Name"],
-        aws_bucket_location=os.environ.get("PODTUBE_AWS_BUCKET_LOCATION") or raw["AWS_Bucket_Location"],
+        aws_bucket_name=os.environ.get("PODTUBE_AWS_BUCKET_NAME") or raw.get("AWS_Bucket_Name") or "",
+        aws_bucket_location=os.environ.get("PODTUBE_AWS_BUCKET_LOCATION") or raw.get("AWS_Bucket_Location") or "",
         ffmpeg_location=resolve_ffmpeg_location(raw),
-        max_threads=int(raw.get("maxThreads", 4)),
+        max_threads=int(raw.get("maxThreads") or 4),
+        dynamodb_table_name=os.environ.get("PODTUBE_DYNAMODB_TABLE") or raw.get("DynamoDB_Table_Name"),
+        aws_region=(
+            os.environ.get("PODTUBE_AWS_REGION")
+            or os.environ.get("AWS_REGION")
+            or raw.get("AWS_Region")
+        ),
     )
 
 

@@ -21,6 +21,14 @@ DEFAULT_HEADERS = {
 }
 
 
+def get_uploads_playlist_id(channel_id: str) -> str:
+    """Convert a YouTube channel ID (UC...) into its uploads playlist ID (UU...)."""
+    cleaned = channel_id.strip()
+    if cleaned.startswith("UC"):
+        return "UU" + cleaned[2:]
+    return cleaned
+
+
 def convert_csv_to_object(url: str) -> list[dict]:
     logger.debug("Fetching channel list CSV from spreadsheet...")
     data = []
@@ -139,40 +147,57 @@ class VideoQuery:
         LastRunTimeStamp: datetime,
         currenttPageToken: str = "",
     ) -> list[Video]:
-        """Query channel videos using the YouTube Data API v3 (from classes/VideoQuery.py)."""
-        published_after = (
-            LastRunTimeStamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        """Query channel videos via the UU... uploads playlist (1 quota unit vs 100 for search)."""
+        cutoff_dt = (
+            LastRunTimeStamp
             if isinstance(LastRunTimeStamp, datetime)
-            else str(LastRunTimeStamp)
+            else datetime.fromisoformat(str(LastRunTimeStamp))
         )
-        channelSearchParams = parse.urlencode(
+        playlist_id = get_uploads_playlist_id(channelIDString)
+        playlist_params = parse.urlencode(
             {
-                "channelId": channelIDString.strip(),
-                "publishedAfter": published_after,
+                "part": "snippet,contentDetails",
+                "playlistId": playlist_id,
                 "maxResults": 50,
-                "type": "video",
                 "pageToken": currenttPageToken,
             }
         )
-        channelSearchresponse = self.YouTubeLookUp("search", channelSearchParams)
-        videoIDs = [
-            x["id"]["videoId"]
-            for x in channelSearchresponse.get("items", [])
-            if "videoId" in x.get("id", {})
-        ]
+        playlist_response = self.YouTubeLookUp("playlistItems", playlist_params)
+
+        videoIDs = []
+        reached_older_videos = False
+        for item in playlist_response.get("items", []):
+            content_details = item.get("contentDetails", {})
+            snippet = item.get("snippet", {})
+            video_id = content_details.get("videoId") or snippet.get(
+                "resourceId", {}
+            ).get("videoId")
+            published_str = content_details.get("videoPublishedAt") or snippet.get(
+                "publishedAt"
+            )
+            if not video_id or not published_str:
+                continue
+            published_dt = datetime.fromisoformat(published_str)
+            if published_dt >= cutoff_dt:
+                videoIDs.append(video_id)
+            else:
+                reached_older_videos = True
+
         if not videoIDs:
             return []
+
         videoSearchParams = parse.urlencode(
             {"part": "contentDetails,snippet", "id": ",".join(videoIDs)}
         )
         videoSearchResponse = self.YouTubeLookUp("videos", videoSearchParams)
         videoInfo = [Video(x) for x in videoSearchResponse.get("items", [])]
-        if "nextPageToken" in channelSearchresponse:
+
+        if "nextPageToken" in playlist_response and not reached_older_videos:
             videoInfo.extend(
                 self.GetVideosFromChannelViaAPI(
                     channelIDString,
-                    LastRunTimeStamp,
-                    currenttPageToken=channelSearchresponse["nextPageToken"],
+                    cutoff_dt,
+                    currenttPageToken=playlist_response["nextPageToken"],
                 )
             )
         return videoInfo

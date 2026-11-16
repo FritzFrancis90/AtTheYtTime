@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Optional, Union
 from PIL import Image, ImageFont, ImageDraw, ImageEnhance
-from podtube.config import PROJECT_ROOT
+from podtube.config import DEFAULT_FONT_REL_PATH, resolve_project_root
 
 
 class ImageEditor:
@@ -13,7 +13,7 @@ class ImageEditor:
         self.font_path = (
             Path(font_path)
             if font_path
-            else (PROJECT_ROOT / "fonts/Oswald/static/Oswald-Regular.ttf")
+            else (resolve_project_root() / DEFAULT_FONT_REL_PATH)
         )
 
     def GetDominantColor(self):
