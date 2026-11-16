@@ -158,6 +158,49 @@ class TestPipeline(unittest.TestCase):
                 self.assertEqual(stats.feeds_updated, 1)
                 self.assertFalse((base_dir / "UC123").exists())
 
+    def test_run_sync_does_not_update_timestamp_when_download_fails(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_dir = Path(tmp_dir)
+            cfg = _make_test_config(base_dir)
+            ch = Channel(
+                {
+                    "channel_id": "UC123",
+                    "channel_name": "Test Channel",
+                    "active": True,
+                    "minute_limit": 0,
+                    "include_keywords": "",
+                    "exclude_keywords": "",
+                }
+            )
+            vid = Video(
+                {
+                    "id": "v_fail",
+                    "snippet": {
+                        "channelTitle": "Test Channel",
+                        "title": "Blocked Video",
+                        "description": "Desc",
+                        "publishedAt": "2026-10-20T12:00:00Z",
+                        "liveBroadcastContent": "none",
+                        "thumbnails": {"high": {"url": "https://example.com/t.jpg"}},
+                    },
+                    "contentDetails": {"duration": "PT5M"},
+                }
+            )
+            vid.DownloadVideoAsAudio = MagicMock(return_value=False)
+
+            with patch("podtube.pipeline.get_channels", return_value=[ch]), patch(
+                "podtube.pipeline.VideoQuery"
+            ) as mock_vq_cls, patch("podtube.pipeline.AWSStorage") as mock_s3_cls, patch(
+                "podtube.pipeline.update_previous_run"
+            ) as mock_update_ts:
+                mock_vq_cls.return_value.GetVideosFromChannel.return_value = [vid]
+                mock_s3_cls.return_value.FileExists.return_value = False
+
+                stats = run_sync(cfg, dry_run=False, update_timestamp=True)
+
+                self.assertEqual(stats.failed_downloads, 1)
+                mock_update_ts.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

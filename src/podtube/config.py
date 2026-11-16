@@ -44,6 +44,8 @@ class AppConfig:
     dynamodb_table_name: Optional[str] = None
     aws_region: Optional[str] = None
     sns_topic_arn: Optional[str] = None
+    cloud_provider: str = "aws"
+    proxy_url: Optional[str] = None
 
 
 def _configure_location(raw_config: dict) -> str:
@@ -100,6 +102,8 @@ def load_config(
     save_location = _configure_location(raw)
     save_dir = Path(save_location) if save_location else project_root
 
+    proxy_url = os.environ.get("PODTUBE_PROXY_URL") or raw.get("Proxy_URL")
+
     return AppConfig(
         project_root=project_root,
         config_file=resolved_path,
@@ -121,6 +125,12 @@ def load_config(
             or raw.get("AWS_Region")
         ),
         sns_topic_arn=os.environ.get("PODTUBE_SNS_TOPIC_ARN") or raw.get("SNS_Topic_ARN"),
+        cloud_provider=(
+            os.environ.get("PODTUBE_CLOUD_PROVIDER")
+            or raw.get("Cloud_Provider")
+            or "aws"
+        ),
+        proxy_url=proxy_url,
     )
 
 

@@ -48,11 +48,15 @@ class TestConfig(unittest.TestCase):
                 {
                     "PODTUBE_API_KEY": "env-secret-key",
                     "PODTUBE_AWS_BUCKET_NAME": "env-bucket",
+                    "PODTUBE_PROXY_URL": "http://user:pass@proxy.example.com:12321",
                 },
             ):
                 cfg = load_config(config_path=cfg_file)
                 self.assertEqual(cfg.api_key, "env-secret-key")
                 self.assertEqual(cfg.aws_bucket_name, "env-bucket")
+                self.assertEqual(
+                    cfg.proxy_url, "http://user:pass@proxy.example.com:12321"
+                )
 
     def test_update_previous_run_preserves_comments(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

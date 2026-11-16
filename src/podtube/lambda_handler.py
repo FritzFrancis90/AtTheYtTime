@@ -99,6 +99,9 @@ def handler(event: Optional[dict[str, Any]], context: Any) -> dict[str, Any]:
     dry_run = bool(event.get("dry_run", False))
     channel_filter = event.get("channel")
     days_back = event.get("days_back")
+    previous_run_override = event.get("previous_run") or os.environ.get(
+        "PODTUBE_PREVIOUS_RUN"
+    )
     cleanup_local = bool(event.get("cleanup_local", True))
     update_timestamp = bool(event.get("update_timestamp", True))
 
@@ -109,7 +112,13 @@ def handler(event: Optional[dict[str, Any]], context: Any) -> dict[str, Any]:
     Path(cfg.save_dir).mkdir(parents=True, exist_ok=True)
 
     server = AWSStorage(cfg.aws_bucket_name, cfg.aws_bucket_location)
-    if days_back is None:
+    if previous_run_override:
+        cfg.last_run_timestamp = datetime.fromisoformat(str(previous_run_override))
+        logger.info(
+            "Using explicit previous_run override: %s",
+            cfg.last_run_timestamp.isoformat(),
+        )
+    elif days_back is None:
         cloud_prev = load_cloud_previous_run(server)
         if cloud_prev is not None:
             cfg.last_run_timestamp = max(cloud_prev, cfg.last_run_timestamp)
@@ -123,7 +132,16 @@ def handler(event: Optional[dict[str, Any]], context: Any) -> dict[str, Any]:
     )
 
     if not dry_run and not channel_filter and update_timestamp:
-        save_cloud_previous_run(server, sync_start_time)
+        if stats.failed_downloads == 0 and stats.channel_errors == 0:
+            save_cloud_previous_run(server, sync_start_time)
+        else:
+            logger.warning(
+                "Skipping %s update in S3 due to errors (failed_downloads=%d, channel_errors=%d); "
+                "failed items will be retried on the next run.",
+                STATE_OBJECT_KEY,
+                stats.failed_downloads,
+                stats.channel_errors,
+            )
 
     if cfg.sns_topic_arn and (stats.failed_downloads > 0 or stats.channel_errors > 0):
         send_failure_notification(

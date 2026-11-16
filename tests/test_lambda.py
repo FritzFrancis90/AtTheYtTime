@@ -160,14 +160,52 @@ class TestLambdaHandler(unittest.TestCase):
             "podtube.lambda_handler.load_cloud_previous_run", return_value=None
         ), patch(
             "podtube.lambda_handler.run_sync", return_value=failing_stats
-        ), patch("podtube.lambda_handler.save_cloud_previous_run"), patch(
+        ), patch(
+            "podtube.lambda_handler.save_cloud_previous_run"
+        ) as mock_save_state, patch(
             "podtube.lambda_handler.send_failure_notification"
         ) as mock_notify:
             handler({"dry_run": False}, context=None)
+            # Should NOT advance previousRun when failed_downloads > 0
+            mock_save_state.assert_not_called()
             mock_notify.assert_called_once_with(
                 failing_stats,
                 "arn:aws:sns:us-east-1:123456789012:podtube-alerts",
                 region_name="us-east-1",
+            )
+
+    def test_lambda_handler_supports_explicit_previous_run_override(self):
+        fake_cfg = AppConfig(
+            project_root=Path("/tmp"),
+            config_file=Path("/tmp/config.yaml"),
+            days_back=7,
+            included_font=Path("/tmp/font.ttf"),
+            save_location="/tmp/podtube",
+            save_dir=Path("/tmp/podtube"),
+            spreadsheet_url="https://example.com/sheet.csv",
+            api_key="test-key",
+            last_run_timestamp=datetime(2026, 11, 15, tzinfo=timezone.utc),
+            aws_bucket_name="test-bucket",
+            aws_bucket_location="https://s3-{0}.amazonaws.com/{1}/{2}",
+        )
+        ok_stats = SyncStats(channels_checked=3)
+
+        with patch("podtube.lambda_handler.setup_logging"), patch(
+            "podtube.lambda_handler.load_config", return_value=fake_cfg
+        ), patch("podtube.lambda_handler.AWSStorage"), patch(
+            "podtube.lambda_handler.load_cloud_previous_run",
+            return_value=datetime(2026, 11, 16, tzinfo=timezone.utc),
+        ) as mock_load_cloud, patch(
+            "podtube.lambda_handler.run_sync", return_value=ok_stats
+        ), patch("podtube.lambda_handler.save_cloud_previous_run"):
+            handler(
+                {"previous_run": "2026-11-10T08:00:00+00:00", "dry_run": True},
+                context=None,
+            )
+            mock_load_cloud.assert_not_called()
+            self.assertEqual(
+                fake_cfg.last_run_timestamp,
+                datetime(2026, 11, 10, 8, 0, 0, tzinfo=timezone.utc),
             )
 
 
