@@ -11,6 +11,7 @@ from podtube.lambda_handler import (
     handler,
     load_cloud_previous_run,
     save_cloud_previous_run,
+    send_failure_notification,
 )
 from podtube.pipeline import SyncStats
 
@@ -101,6 +102,72 @@ class TestLambdaHandler(unittest.TestCase):
             mock_save_state.assert_called_once()
             self.assertEqual(
                 mock_save_state.call_args[0][0], mock_s3_cls.return_value
+            )
+
+    def test_send_failure_notification_publishes_to_sns(self):
+        stats = SyncStats(
+            channels_checked=10,
+            channels_with_new_videos=2,
+            episodes_downloaded=1,
+            feeds_updated=1,
+            failed_downloads=1,
+            channel_errors=2,
+        )
+        topic_arn = "arn:aws:sns:us-east-1:123456789012:podtube-alerts"
+
+        with patch("podtube.lambda_handler.boto3.client") as mock_client_fn:
+            mock_sns = MagicMock()
+            mock_client_fn.return_value = mock_sns
+
+            send_failure_notification(
+                stats=stats,
+                sns_topic_arn=topic_arn,
+                region_name="us-east-1",
+            )
+
+            mock_client_fn.assert_called_once_with("sns", region_name="us-east-1")
+            mock_sns.publish.assert_called_once()
+            call_kwargs = mock_sns.publish.call_args.kwargs
+            self.assertEqual(call_kwargs["TopicArn"], topic_arn)
+            self.assertIn("failed_downloads=1", call_kwargs["Message"])
+            self.assertIn("channel_errors=2", call_kwargs["Message"])
+
+    def test_lambda_handler_sends_sns_notification_when_failures_occur(self):
+        fake_cfg = AppConfig(
+            project_root=Path("/tmp"),
+            config_file=Path("/tmp/config.yaml"),
+            days_back=7,
+            included_font=Path("/tmp/font.ttf"),
+            save_location="/tmp/podtube",
+            save_dir=Path("/tmp/podtube"),
+            spreadsheet_url="https://example.com/sheet.csv",
+            api_key="test-key",
+            last_run_timestamp=datetime(2026, 11, 10, tzinfo=timezone.utc),
+            aws_bucket_name="test-bucket",
+            aws_bucket_location="https://s3-{0}.amazonaws.com/{1}/{2}",
+            aws_region="us-east-1",
+            sns_topic_arn="arn:aws:sns:us-east-1:123456789012:podtube-alerts",
+        )
+        failing_stats = SyncStats(
+            channels_checked=5,
+            failed_downloads=1,
+            channel_errors=0,
+        )
+
+        with patch("podtube.lambda_handler.setup_logging"), patch(
+            "podtube.lambda_handler.load_config", return_value=fake_cfg
+        ), patch("podtube.lambda_handler.AWSStorage"), patch(
+            "podtube.lambda_handler.load_cloud_previous_run", return_value=None
+        ), patch(
+            "podtube.lambda_handler.run_sync", return_value=failing_stats
+        ), patch("podtube.lambda_handler.save_cloud_previous_run"), patch(
+            "podtube.lambda_handler.send_failure_notification"
+        ) as mock_notify:
+            handler({"dry_run": False}, context=None)
+            mock_notify.assert_called_once_with(
+                failing_stats,
+                "arn:aws:sns:us-east-1:123456789012:podtube-alerts",
+                region_name="us-east-1",
             )
 
 

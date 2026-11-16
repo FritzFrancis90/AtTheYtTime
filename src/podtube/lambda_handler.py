@@ -8,9 +8,10 @@ import os
 from pathlib import Path
 import tempfile
 from typing import Any, Optional
+import boto3
 from podtube.config import load_config
 from podtube.logging_config import setup_logging
-from podtube.pipeline import run_sync
+from podtube.pipeline import SyncStats, run_sync
 from podtube.services.storage import AWSStorage
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,41 @@ def save_cloud_previous_run(
     return formatted_ts
 
 
+def send_failure_notification(
+    stats: SyncStats,
+    sns_topic_arn: str,
+    region_name: Optional[str] = None,
+) -> None:
+    """Publish a failure summary alert to an Amazon SNS topic."""
+    sns_client = (
+        boto3.client("sns", region_name=region_name)
+        if region_name
+        else boto3.client("sns")
+    )
+    subject = (
+        f"PodTube Sync Alert: {stats.failed_downloads} failed download(s), "
+        f"{stats.channel_errors} channel error(s)"
+    )
+    message = (
+        "PodTube completed a sync run with errors:\n\n"
+        f"- Channels Checked: {stats.channels_checked}\n"
+        f"- Channels with New Videos: {stats.channels_with_new_videos}\n"
+        f"- Episodes Downloaded: {stats.episodes_downloaded}\n"
+        f"- Feeds Updated: {stats.feeds_updated}\n"
+        f"- Failed Downloads (failed_downloads={stats.failed_downloads}): {stats.failed_downloads}\n"
+        f"- Channel Errors (channel_errors={stats.channel_errors}): {stats.channel_errors}\n"
+    )
+    try:
+        sns_client.publish(
+            TopicArn=sns_topic_arn,
+            Subject=subject[:100],
+            Message=message,
+        )
+        logger.info("Sent failure alert to SNS topic")
+    except Exception as exc:
+        logger.error("Failed to publish alert to SNS: %s", exc)
+
+
 def handler(event: Optional[dict[str, Any]], context: Any) -> dict[str, Any]:
     """AWS Lambda handler invoked by EventBridge Scheduler or manual test events."""
     event = event or {}
@@ -89,8 +125,12 @@ def handler(event: Optional[dict[str, Any]], context: Any) -> dict[str, Any]:
     if not dry_run and not channel_filter and update_timestamp:
         save_cloud_previous_run(server, sync_start_time)
 
+    if cfg.sns_topic_arn and (stats.failed_downloads > 0 or stats.channel_errors > 0):
+        send_failure_notification(
+            stats, cfg.sns_topic_arn, region_name=cfg.aws_region
+        )
+
     return {
         "statusCode": 200,
         "stats": asdict(stats),
     }
-

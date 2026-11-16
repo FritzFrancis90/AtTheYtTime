@@ -43,6 +43,7 @@ class AppConfig:
     max_threads: int = 4
     dynamodb_table_name: Optional[str] = None
     aws_region: Optional[str] = None
+    sns_topic_arn: Optional[str] = None
 
 
 def _configure_location(raw_config: dict) -> str:
@@ -119,6 +120,7 @@ def load_config(
             or os.environ.get("AWS_REGION")
             or raw.get("AWS_Region")
         ),
+        sns_topic_arn=os.environ.get("PODTUBE_SNS_TOPIC_ARN") or raw.get("SNS_Topic_ARN"),
     )
 
 
