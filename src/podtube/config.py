@@ -46,6 +46,9 @@ class AppConfig:
     sns_topic_arn: Optional[str] = None
     cloud_provider: str = "aws"
     proxy_url: Optional[str] = None
+    feed_token: Optional[str] = None
+    s3_public_read: bool = True
+    presigned_url_expiry_seconds: int = 604800
 
 
 def _configure_location(raw_config: dict) -> str:
@@ -78,6 +81,19 @@ def resolve_ffmpeg_location(raw_config: Optional[dict] = None) -> Optional[str]:
     return None
 
 
+def _parse_optional_bool(value) -> Optional[bool]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes", "y"):
+        return True
+    if text in ("false", "0", "no", "n"):
+        return False
+    return None
+
+
 def load_config(
     config_path: Optional[Path] = None,
     days_back_override: Optional[int] = None,
@@ -103,6 +119,18 @@ def load_config(
     save_dir = Path(save_location) if save_location else project_root
 
     proxy_url = os.environ.get("PODTUBE_PROXY_URL") or raw.get("Proxy_URL")
+    feed_token = os.environ.get("PODTUBE_FEED_TOKEN") or raw.get("Feed_Token")
+    raw_public_read = _parse_optional_bool(
+        os.environ.get("PODTUBE_S3_PUBLIC_READ")
+        if "PODTUBE_S3_PUBLIC_READ" in os.environ
+        else raw.get("S3_Public_Read")
+    )
+    s3_public_read = raw_public_read if raw_public_read is not None else (not bool(feed_token))
+    presigned_expiry = int(
+        os.environ.get("PODTUBE_PRESIGNED_URL_EXPIRY")
+        or raw.get("Presigned_URL_Expiry")
+        or 604800
+    )
 
     return AppConfig(
         project_root=project_root,
@@ -131,6 +159,9 @@ def load_config(
             or "aws"
         ),
         proxy_url=proxy_url,
+        feed_token=feed_token,
+        s3_public_read=s3_public_read,
+        presigned_url_expiry_seconds=presigned_expiry,
     )
 
 

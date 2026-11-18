@@ -9,9 +9,15 @@ logger = logging.getLogger(__name__)
 
 
 class AWSStorage:
-    def __init__(self, AWS_Bucket_Name: str, AWS_Bucket_Location: str):
+    def __init__(
+        self,
+        AWS_Bucket_Name: str,
+        AWS_Bucket_Location: str,
+        public_read: bool = True,
+    ):
         self.BUCKET_NAME = AWS_Bucket_Name
         self.BUCKET_FORMAT = AWS_Bucket_Location
+        self.public_read = public_read
         self.s3 = boto3.resource("s3")
         self.bucketLocation = self.s3.meta.client.get_bucket_location(
             Bucket=self.BUCKET_NAME
@@ -33,12 +39,13 @@ class AWSStorage:
 
     def UploadFile(self, filepath: str, designatedFileName: str = None):
         target_name = designatedFileName or os.path.basename(filepath)
+        extra_args = {"ACL": "public-read"} if self.public_read else None
         try:
             self.s3.meta.client.upload_file(
                 filepath,
                 self.BUCKET_NAME,
                 designatedFileName,
-                ExtraArgs={"ACL": "public-read"},
+                ExtraArgs=extra_args,
             )
             objectURL = self.BUCKET_FORMAT.format(
                 self.bucketLocation["LocationConstraint"],
@@ -71,3 +78,11 @@ class AWSStorage:
         self.s3.meta.client.delete_object(Bucket=self.BUCKET_NAME, Key=filename)
         logger.debug("Deleted %s", filename)
         return True
+
+    def GeneratePresignedUrl(self, filename: str, expires_in: int = 604800) -> str:
+        """Generate a temporary presigned S3 GET URL for a private object."""
+        return self.s3.meta.client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self.BUCKET_NAME, "Key": filename},
+            ExpiresIn=expires_in,
+        )

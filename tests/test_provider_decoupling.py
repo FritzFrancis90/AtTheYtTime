@@ -55,6 +55,9 @@ class InMemoryStorage:
         self.files.pop(filename, None)
         return True
 
+    def GeneratePresignedUrl(self, filename: str, expires_in: int = 604800) -> str:
+        return f"https://storage.example.com/{filename}?expires={expires_in}"
+
 
 class InMemoryChannelRepo:
     """Provider-agnostic in-memory ChannelRepository for testing decoupling."""
@@ -159,6 +162,38 @@ class TestProviderDecoupling(unittest.TestCase):
             self.assertEqual(stats.channels_checked, 1)
             # AWSStorage should never be instantiated when a custom storage provider is injected
             mock_aws_storage.assert_not_called()
+
+    def test_aws_storage_private_upload_and_presigned_url(self):
+        with patch("podtube.services.storage.boto3.resource") as mock_res:
+            mock_client = mock_res.return_value.meta.client
+            mock_client.get_bucket_location.return_value = {
+                "LocationConstraint": "us-east-1"
+            }
+            mock_client.generate_presigned_url.return_value = (
+                "https://signed.example.com/UC123/ep1.mp3?sig=1"
+            )
+
+            storage = AWSStorage(
+                "my-bucket",
+                "https://s3-{0}.amazonaws.com/{1}/{2}",
+                public_read=False,
+            )
+            storage.UploadFile("/tmp/ep1.mp3", designatedFileName="UC123/ep1.mp3")
+
+            mock_client.upload_file.assert_called_once_with(
+                "/tmp/ep1.mp3",
+                "my-bucket",
+                "UC123/ep1.mp3",
+                ExtraArgs=None,
+            )
+
+            signed = storage.GeneratePresignedUrl("UC123/ep1.mp3", expires_in=7200)
+            self.assertEqual(signed, "https://signed.example.com/UC123/ep1.mp3?sig=1")
+            mock_client.generate_presigned_url.assert_called_once_with(
+                "get_object",
+                Params={"Bucket": "my-bucket", "Key": "UC123/ep1.mp3"},
+                ExpiresIn=7200,
+            )
 
 
 if __name__ == "__main__":

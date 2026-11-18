@@ -84,7 +84,9 @@ def run_sync(
     sync_start_time = datetime.now(timezone.utc)
     downloader = VideoQuery(api_key=config.api_key or "APIKey")
     server = storage or AWSStorage(
-        config.aws_bucket_name, config.aws_bucket_location
+        config.aws_bucket_name,
+        config.aws_bucket_location,
+        public_read=config.s3_public_read,
     )
 
     if channel_repo is not None:

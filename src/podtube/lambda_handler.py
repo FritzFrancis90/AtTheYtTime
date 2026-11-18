@@ -1,7 +1,8 @@
-"""AWS Lambda entry point and S3-backed state persistence for PodTube."""
+"""AWS Lambda entry point for scheduled syncs and authenticated private feed serving."""
 
 from dataclasses import asdict
 from datetime import datetime, timezone
+import hmac
 import json
 import logging
 import os
@@ -12,6 +13,7 @@ import boto3
 from podtube.config import load_config
 from podtube.logging_config import setup_logging
 from podtube.pipeline import SyncStats, run_sync
+from podtube.services.feed import presign_feed_xml
 from podtube.services.storage import AWSStorage
 
 logger = logging.getLogger(__name__)
@@ -90,9 +92,97 @@ def send_failure_notification(
         logger.error("Failed to publish alert to SNS: %s", exc)
 
 
+def _is_http_event(event: dict[str, Any]) -> bool:
+    return "rawPath" in event or "http" in event.get("requestContext", {})
+
+
+def _extract_request_token(event: dict[str, Any]) -> str:
+    query_params = event.get("queryStringParameters") or {}
+    if query_params.get("token"):
+        return str(query_params["token"])
+    headers = {str(k).lower(): str(v) for k, v in (event.get("headers") or {}).items()}
+    auth_header = headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        return auth_header[7:].strip()
+    return ""
+
+
+def handle_feed_request(event: dict[str, Any]) -> dict[str, Any]:
+    """Serve an authenticated podcast RSS XML feed with temporary S3 presigned URLs."""
+    setup_logging(verbose=False)
+    cfg = load_config()
+
+    provided_token = _extract_request_token(event)
+    if (
+        not cfg.feed_token
+        or not provided_token
+        or not hmac.compare_digest(provided_token, cfg.feed_token)
+    ):
+        return {
+            "statusCode": 403,
+            "headers": {"Content-Type": "text/plain"},
+            "body": "Forbidden",
+        }
+
+    raw_path = str(event.get("rawPath", "")).strip("/")
+    parts = [p for p in raw_path.split("/") if p]
+    if len(parts) != 2 or parts[0] != "feed":
+        return {
+            "statusCode": 404,
+            "headers": {"Content-Type": "text/plain"},
+            "body": "Not Found",
+        }
+
+    channel_id = parts[1]
+    if channel_id.endswith(".xml"):
+        channel_id = channel_id[:-4]
+    if not channel_id or ".." in channel_id:
+        return {
+            "statusCode": 400,
+            "headers": {"Content-Type": "text/plain"},
+            "body": "Invalid channel ID",
+        }
+
+    server = AWSStorage(
+        cfg.aws_bucket_name,
+        cfg.aws_bucket_location,
+        public_read=cfg.s3_public_read,
+    )
+    xml_key = f"{channel_id}/{channel_id}.xml"
+    if not server.FileExists(xml_key):
+        return {
+            "statusCode": 404,
+            "headers": {"Content-Type": "text/plain"},
+            "body": "Feed Not Found",
+        }
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        local_xml = Path(tmp_dir) / f"{channel_id}.xml"
+        server.DownloadFile(xml_key, str(local_xml))
+        raw_xml = local_xml.read_text(encoding="utf-8")
+
+    signed_xml = presign_feed_xml(
+        raw_xml,
+        server,
+        bucket_name=cfg.aws_bucket_name,
+        expires_in=cfg.presigned_url_expiry_seconds,
+    )
+    return {
+        "statusCode": 200,
+        "headers": {
+            "Content-Type": "application/rss+xml; charset=utf-8",
+            "Cache-Control": "private, max-age=300",
+        },
+        "body": signed_xml,
+    }
+
+
 def handler(event: Optional[dict[str, Any]], context: Any) -> dict[str, Any]:
-    """AWS Lambda handler invoked by EventBridge Scheduler or manual test events."""
+    """AWS Lambda handler supporting both HTTP Function URL feed requests and scheduled syncs."""
     event = event or {}
+    if _is_http_event(event):
+        return handle_feed_request(event)
+
     os.environ.setdefault("PODTUBE_SAVE_LOCATION", "/tmp/podtube")
 
     verbose = bool(event.get("verbose", False))
@@ -111,7 +201,11 @@ def handler(event: Optional[dict[str, Any]], context: Any) -> dict[str, Any]:
     cfg = load_config(days_back_override=days_back)
     Path(cfg.save_dir).mkdir(parents=True, exist_ok=True)
 
-    server = AWSStorage(cfg.aws_bucket_name, cfg.aws_bucket_location)
+    server = AWSStorage(
+        cfg.aws_bucket_name,
+        cfg.aws_bucket_location,
+        public_read=cfg.s3_public_read,
+    )
     if previous_run_override:
         cfg.last_run_timestamp = datetime.fromisoformat(str(previous_run_override))
         logger.info(

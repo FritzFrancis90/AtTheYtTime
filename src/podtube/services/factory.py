@@ -19,7 +19,11 @@ def create_storage_provider(config: AppConfig) -> StorageProvider:
     """Instantiate the configured cloud StorageProvider."""
     provider = (config.cloud_provider or "aws").lower()
     if provider == "aws":
-        return AWSStorage(config.aws_bucket_name, config.aws_bucket_location)
+        return AWSStorage(
+            config.aws_bucket_name,
+            config.aws_bucket_location,
+            public_read=config.s3_public_read,
+        )
     raise ValueError(f"Unsupported cloud_provider for storage: '{config.cloud_provider}'")
 
 

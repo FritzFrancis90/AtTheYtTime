@@ -26,6 +26,10 @@ class StorageProvider(Protocol):
 
     def DeleteFile(self, filename: str) -> bool: ...
 
+    def GeneratePresignedUrl(
+        self, filename: str, expires_in: int = 604800
+    ) -> str: ...
+
 
 @runtime_checkable
 class ChannelRepository(Protocol):
