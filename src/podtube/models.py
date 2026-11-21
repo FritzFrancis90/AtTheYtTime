@@ -191,6 +191,7 @@ class Video:
         folderPath: Union[str, Path],
         channelID: str,
         ffmpeg_location: Optional[str] = None,
+        proxy_url: Optional[str] = None,
     ) -> bool:
         base_dir = Path(folderPath)
         existing_path = base_dir / channelID / f"{self.ID}.mp3"
@@ -220,6 +221,8 @@ class Video:
         }
         if resolved_ffmpeg:
             ydl_opts["ffmpeg_location"] = resolved_ffmpeg
+        if proxy_url:
+            ydl_opts["proxy"] = proxy_url
 
         mp3_path = base_dir / f"{self.ID}.mp3"
         jpg_path = base_dir / f"{self.ID}.jpg"

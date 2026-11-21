@@ -13,6 +13,7 @@ from podtube.models import Channel
 from podtube.services.artwork import create_podcast_image
 from podtube.services.channel_store import DynamoDBChannelStore
 from podtube.services.feed import PodcastFeed, add_old_episodes_to_new_feed
+from podtube.services.interfaces import ChannelRepository, StorageProvider
 from podtube.services.storage import AWSStorage
 from podtube.services.youtube import VideoQuery, get_channels
 
@@ -52,7 +53,7 @@ def cleanup_channel_local_files(channel: Channel, save_location: Union[str, Path
     logger.debug("Cleaned up local files for %s (%s)", channel.Name, channel.ID)
 
 
-def assign_already_loaded(channel: Channel, server: AWSStorage):
+def assign_already_loaded(channel: Channel, server: StorageProvider):
     for video in channel.videoList:
         if server.FileExists(f"{channel.ID}/{video.ID}.mp3") is True:
             video.alreadyLoaded = 1
@@ -61,7 +62,7 @@ def assign_already_loaded(channel: Channel, server: AWSStorage):
 def upload_feed_to_aws(
     podcast_feed_file: str,
     save_location: Union[str, Path],
-    server: AWSStorage,
+    server: StorageProvider,
 ):
     if server.FileExists(podcast_feed_file):
         server.DeleteFile(podcast_feed_file)
@@ -75,14 +76,22 @@ def run_sync(
     dry_run: bool = False,
     update_timestamp: bool = True,
     cleanup_local: bool = False,
+    storage: Optional[StorageProvider] = None,
+    channel_repo: Optional[ChannelRepository] = None,
 ) -> SyncStats:
     """Execute the channel sync and podcast feed generation workflow."""
     stats = SyncStats()
     sync_start_time = datetime.now(timezone.utc)
     downloader = VideoQuery(api_key=config.api_key or "APIKey")
-    server = AWSStorage(config.aws_bucket_name, config.aws_bucket_location)
+    server = storage or AWSStorage(
+        config.aws_bucket_name,
+        config.aws_bucket_location,
+        public_read=config.s3_public_read,
+    )
 
-    if config.dynamodb_table_name:
+    if channel_repo is not None:
+        all_channels = channel_repo.get_channels()
+    elif config.dynamodb_table_name:
         store = DynamoDBChannelStore(
             config.dynamodb_table_name, region_name=config.aws_region
         )
@@ -146,10 +155,13 @@ def run_sync(
             XMLFileName = f"{channel.ID}/{channel.ID}.xml"
             NewFeed = PodcastFeed(channel.Name, save_location=config.save_dir)
             for newVideo in channel.videoList:
+                download_kwargs = {"ffmpeg_location": config.ffmpeg_location}
+                if config.proxy_url:
+                    download_kwargs["proxy_url"] = config.proxy_url
                 newVideoResult = newVideo.DownloadVideoAsAudio(
                     config.save_dir,
                     channel.ID,
-                    ffmpeg_location=config.ffmpeg_location,
+                    **download_kwargs,
                 )
                 if newVideoResult is False:
                     newVideo.isValidDownload = 0
@@ -218,7 +230,15 @@ def run_sync(
             stats.channel_errors += 1
 
     if not dry_run and not channel_filter and update_timestamp:
-        new_ts = update_previous_run(config.config_file, sync_start_time)
-        logger.info("Updated previousRun in %s to %s", config.config_file.name, new_ts)
+        if stats.failed_downloads == 0 and stats.channel_errors == 0:
+            new_ts = update_previous_run(config.config_file, sync_start_time)
+            logger.info("Updated previousRun in %s to %s", config.config_file.name, new_ts)
+        else:
+            logger.warning(
+                "Skipping previousRun update due to errors (failed_downloads=%d, channel_errors=%d); "
+                "failed items will be retried on the next run.",
+                stats.failed_downloads,
+                stats.channel_errors,
+            )
 
     return stats

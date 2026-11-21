@@ -1,6 +1,9 @@
 """Unit tests for Channel and Video models."""
 
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 import xml.etree.ElementTree as ET
 from podtube.models import Channel, Video
 
@@ -170,6 +173,33 @@ class TestModels(unittest.TestCase):
         )
         ch.videoList = [v_older, v_newer]
         self.assertEqual(ch.GetMostRecentVideo().ID, "new")
+
+    def test_download_video_as_audio_passes_proxy_url_when_present(self):
+        vid = Video(make_api_video_item(video_id="vid_proxy"))
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_dir = Path(tmp_dir)
+            proxy = "http://user:pass@proxy.example.com:12321"
+            captured_opts = {}
+
+            class FakeYDL:
+                def __init__(self, opts):
+                    captured_opts.update(opts)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
+                def download(self, urls):
+                    raise RuntimeError("stop after checking opts")
+
+            with patch("podtube.models.youtube_dl.YoutubeDL", FakeYDL):
+                result = vid.DownloadVideoAsAudio(
+                    base_dir, "UC123", proxy_url=proxy
+                )
+                self.assertFalse(result)
+                self.assertEqual(captured_opts.get("proxy"), proxy)
 
 
 if __name__ == "__main__":

@@ -48,11 +48,15 @@ class TestConfig(unittest.TestCase):
                 {
                     "PODTUBE_API_KEY": "env-secret-key",
                     "PODTUBE_AWS_BUCKET_NAME": "env-bucket",
+                    "PODTUBE_PROXY_URL": "http://user:pass@proxy.example.com:12321",
                 },
             ):
                 cfg = load_config(config_path=cfg_file)
                 self.assertEqual(cfg.api_key, "env-secret-key")
                 self.assertEqual(cfg.aws_bucket_name, "env-bucket")
+                self.assertEqual(
+                    cfg.proxy_url, "http://user:pass@proxy.example.com:12321"
+                )
 
     def test_update_previous_run_preserves_comments(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -106,6 +110,33 @@ class TestConfig(unittest.TestCase):
                     task_root / "fonts/Oswald/static/Oswald-Regular.ttf",
                 )
                 self.assertEqual(cfg.aws_bucket_name, "lambda-bucket")
+
+    def test_feed_token_and_s3_public_read_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cfg_file = Path(tmp_dir) / "config.yaml"
+            cfg_file.write_text(SAMPLE_CONFIG_YAML, encoding="utf-8")
+
+            # Without feed token, s3_public_read defaults to True for backwards compatibility
+            cfg_default = load_config(config_path=cfg_file)
+            self.assertIsNone(cfg_default.feed_token)
+            self.assertTrue(cfg_default.s3_public_read)
+
+            # With PODTUBE_FEED_TOKEN set, s3_public_read automatically defaults to False
+            with patch.dict(os.environ, {"PODTUBE_FEED_TOKEN": "my-secret-token"}):
+                cfg_private = load_config(config_path=cfg_file)
+                self.assertEqual(cfg_private.feed_token, "my-secret-token")
+                self.assertFalse(cfg_private.s3_public_read)
+
+            # Explicit PODTUBE_S3_PUBLIC_READ overrides the default
+            with patch.dict(
+                os.environ,
+                {
+                    "PODTUBE_FEED_TOKEN": "my-secret-token",
+                    "PODTUBE_S3_PUBLIC_READ": "true",
+                },
+            ):
+                cfg_override = load_config(config_path=cfg_file)
+                self.assertTrue(cfg_override.s3_public_read)
 
 
 if __name__ == "__main__":

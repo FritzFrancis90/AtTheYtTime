@@ -54,6 +54,22 @@ class DynamoDBChannelStore:
         return count
 
 
+class GoogleSheetChannelRepository:
+    """Read-only ChannelRepository backed by a published Google Sheet CSV URL."""
+
+    def __init__(self, spreadsheet_url: str):
+        self.spreadsheet_url = spreadsheet_url
+
+    def get_channels(self) -> list[Channel]:
+        return get_channels(self.spreadsheet_url)
+
+    def put_channel(self, channel: Channel) -> None:
+        raise NotImplementedError("GoogleSheetChannelRepository is read-only.")
+
+    def import_channels(self, channels: list[Channel]) -> int:
+        raise NotImplementedError("GoogleSheetChannelRepository is read-only.")
+
+
 def import_sheet_to_dynamodb(
     spreadsheet_url: str,
     table_name: str,

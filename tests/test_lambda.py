@@ -11,6 +11,7 @@ from podtube.lambda_handler import (
     handler,
     load_cloud_previous_run,
     save_cloud_previous_run,
+    send_failure_notification,
 )
 from podtube.pipeline import SyncStats
 
@@ -102,6 +103,217 @@ class TestLambdaHandler(unittest.TestCase):
             self.assertEqual(
                 mock_save_state.call_args[0][0], mock_s3_cls.return_value
             )
+
+    def test_send_failure_notification_publishes_to_sns(self):
+        stats = SyncStats(
+            channels_checked=10,
+            channels_with_new_videos=2,
+            episodes_downloaded=1,
+            feeds_updated=1,
+            failed_downloads=1,
+            channel_errors=2,
+        )
+        topic_arn = "arn:aws:sns:us-east-1:123456789012:podtube-alerts"
+
+        with patch("podtube.lambda_handler.boto3.client") as mock_client_fn:
+            mock_sns = MagicMock()
+            mock_client_fn.return_value = mock_sns
+
+            send_failure_notification(
+                stats=stats,
+                sns_topic_arn=topic_arn,
+                region_name="us-east-1",
+            )
+
+            mock_client_fn.assert_called_once_with("sns", region_name="us-east-1")
+            mock_sns.publish.assert_called_once()
+            call_kwargs = mock_sns.publish.call_args.kwargs
+            self.assertEqual(call_kwargs["TopicArn"], topic_arn)
+            self.assertIn("failed_downloads=1", call_kwargs["Message"])
+            self.assertIn("channel_errors=2", call_kwargs["Message"])
+
+    def test_lambda_handler_sends_sns_notification_when_failures_occur(self):
+        fake_cfg = AppConfig(
+            project_root=Path("/tmp"),
+            config_file=Path("/tmp/config.yaml"),
+            days_back=7,
+            included_font=Path("/tmp/font.ttf"),
+            save_location="/tmp/podtube",
+            save_dir=Path("/tmp/podtube"),
+            spreadsheet_url="https://example.com/sheet.csv",
+            api_key="test-key",
+            last_run_timestamp=datetime(2026, 11, 10, tzinfo=timezone.utc),
+            aws_bucket_name="test-bucket",
+            aws_bucket_location="https://s3-{0}.amazonaws.com/{1}/{2}",
+            aws_region="us-east-1",
+            sns_topic_arn="arn:aws:sns:us-east-1:123456789012:podtube-alerts",
+        )
+        failing_stats = SyncStats(
+            channels_checked=5,
+            failed_downloads=1,
+            channel_errors=0,
+        )
+
+        with patch("podtube.lambda_handler.setup_logging"), patch(
+            "podtube.lambda_handler.load_config", return_value=fake_cfg
+        ), patch("podtube.lambda_handler.AWSStorage"), patch(
+            "podtube.lambda_handler.load_cloud_previous_run", return_value=None
+        ), patch(
+            "podtube.lambda_handler.run_sync", return_value=failing_stats
+        ), patch(
+            "podtube.lambda_handler.save_cloud_previous_run"
+        ) as mock_save_state, patch(
+            "podtube.lambda_handler.send_failure_notification"
+        ) as mock_notify:
+            handler({"dry_run": False}, context=None)
+            # Should NOT advance previousRun when failed_downloads > 0
+            mock_save_state.assert_not_called()
+            mock_notify.assert_called_once_with(
+                failing_stats,
+                "arn:aws:sns:us-east-1:123456789012:podtube-alerts",
+                region_name="us-east-1",
+            )
+
+    def test_lambda_handler_supports_explicit_previous_run_override(self):
+        fake_cfg = AppConfig(
+            project_root=Path("/tmp"),
+            config_file=Path("/tmp/config.yaml"),
+            days_back=7,
+            included_font=Path("/tmp/font.ttf"),
+            save_location="/tmp/podtube",
+            save_dir=Path("/tmp/podtube"),
+            spreadsheet_url="https://example.com/sheet.csv",
+            api_key="test-key",
+            last_run_timestamp=datetime(2026, 11, 15, tzinfo=timezone.utc),
+            aws_bucket_name="test-bucket",
+            aws_bucket_location="https://s3-{0}.amazonaws.com/{1}/{2}",
+        )
+        ok_stats = SyncStats(channels_checked=3)
+
+        with patch("podtube.lambda_handler.setup_logging"), patch(
+            "podtube.lambda_handler.load_config", return_value=fake_cfg
+        ), patch("podtube.lambda_handler.AWSStorage"), patch(
+            "podtube.lambda_handler.load_cloud_previous_run",
+            return_value=datetime(2026, 11, 16, tzinfo=timezone.utc),
+        ) as mock_load_cloud, patch(
+            "podtube.lambda_handler.run_sync", return_value=ok_stats
+        ), patch("podtube.lambda_handler.save_cloud_previous_run"):
+            handler(
+                {"previous_run": "2026-11-10T08:00:00+00:00", "dry_run": True},
+                context=None,
+            )
+            mock_load_cloud.assert_not_called()
+            self.assertEqual(
+                fake_cfg.last_run_timestamp,
+                datetime(2026, 11, 10, 8, 0, 0, tzinfo=timezone.utc),
+            )
+
+    def test_lambda_http_feed_rejects_missing_or_invalid_token(self):
+        fake_cfg = AppConfig(
+            project_root=Path("/tmp"),
+            config_file=Path("/tmp/config.yaml"),
+            days_back=7,
+            included_font=Path("/tmp/font.ttf"),
+            save_location="/tmp/podtube",
+            save_dir=Path("/tmp/podtube"),
+            spreadsheet_url="",
+            api_key=None,
+            last_run_timestamp=datetime(2026, 11, 10, tzinfo=timezone.utc),
+            aws_bucket_name="test-bucket",
+            aws_bucket_location="https://s3-{0}.amazonaws.com/{1}/{2}",
+            feed_token="top-secret-token",
+        )
+        http_event = {
+            "rawPath": "/feed/UC123",
+            "queryStringParameters": {"token": "wrong-token"},
+            "requestContext": {"http": {"method": "GET"}},
+        }
+
+        with patch("podtube.lambda_handler.setup_logging"), patch(
+            "podtube.lambda_handler.load_config", return_value=fake_cfg
+        ):
+            res = handler(http_event, context=None)
+            self.assertEqual(res["statusCode"], 403)
+
+            # Unconfigured feed_token should also reject all feed requests
+            fake_cfg.feed_token = None
+            res_unconfigured = handler(http_event, context=None)
+            self.assertEqual(res_unconfigured["statusCode"], 403)
+
+    def test_lambda_http_feed_returns_404_when_channel_feed_missing(self):
+        fake_cfg = AppConfig(
+            project_root=Path("/tmp"),
+            config_file=Path("/tmp/config.yaml"),
+            days_back=7,
+            included_font=Path("/tmp/font.ttf"),
+            save_location="/tmp/podtube",
+            save_dir=Path("/tmp/podtube"),
+            spreadsheet_url="",
+            api_key=None,
+            last_run_timestamp=datetime(2026, 11, 10, tzinfo=timezone.utc),
+            aws_bucket_name="test-bucket",
+            aws_bucket_location="https://s3-{0}.amazonaws.com/{1}/{2}",
+            feed_token="top-secret-token",
+        )
+        http_event = {
+            "rawPath": "/feed/UC999.xml",
+            "queryStringParameters": {"token": "top-secret-token"},
+            "requestContext": {"http": {"method": "GET"}},
+        }
+
+        with patch("podtube.lambda_handler.setup_logging"), patch(
+            "podtube.lambda_handler.load_config", return_value=fake_cfg
+        ), patch("podtube.lambda_handler.AWSStorage") as mock_s3_cls:
+            mock_s3_cls.return_value.FileExists.return_value = False
+            res = handler(http_event, context=None)
+            self.assertEqual(res["statusCode"], 404)
+
+    def test_lambda_http_feed_serves_presigned_xml_with_valid_token(self):
+        fake_cfg = AppConfig(
+            project_root=Path("/tmp"),
+            config_file=Path("/tmp/config.yaml"),
+            days_back=7,
+            included_font=Path("/tmp/font.ttf"),
+            save_location="/tmp/podtube",
+            save_dir=Path("/tmp/podtube"),
+            spreadsheet_url="",
+            api_key=None,
+            last_run_timestamp=datetime(2026, 11, 10, tzinfo=timezone.utc),
+            aws_bucket_name="test-bucket",
+            aws_bucket_location="https://s3-{0}.amazonaws.com/{1}/{2}",
+            feed_token="top-secret-token",
+        )
+        sample_rss = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<rss version="2.0"><channel><title>My Show</title>'
+            '<item><title>Ep 1</title>'
+            '<enclosure url="https://s3-us-east-1.amazonaws.com/test-bucket/UC123/ep1.mp3" length="0" type="audio/mpeg"/>'
+            "</item></channel></rss>"
+        )
+        http_event = {
+            "rawPath": "/feed/UC123",
+            "queryStringParameters": {"token": "top-secret-token"},
+            "requestContext": {"http": {"method": "GET"}},
+        }
+
+        with patch("podtube.lambda_handler.setup_logging"), patch(
+            "podtube.lambda_handler.load_config", return_value=fake_cfg
+        ), patch("podtube.lambda_handler.AWSStorage") as mock_s3_cls:
+            mock_s3 = mock_s3_cls.return_value
+            mock_s3.FileExists.return_value = True
+            mock_s3.DownloadFile.side_effect = lambda key, dest: Path(dest).write_text(
+                sample_rss, encoding="utf-8"
+            )
+            mock_s3.GeneratePresignedUrl.return_value = (
+                "https://test-bucket.s3.amazonaws.com/UC123/ep1.mp3?X-Amz-Signature=abc"
+            )
+
+            res = handler(http_event, context=None)
+            self.assertEqual(res["statusCode"], 200)
+            self.assertEqual(
+                res["headers"]["Content-Type"], "application/rss+xml; charset=utf-8"
+            )
+            self.assertIn("X-Amz-Signature=abc", res["body"])
 
 
 if __name__ == "__main__":
